@@ -1292,7 +1292,7 @@ class SpeechBot {
                 } else {
                     this.resetAutoCloseTimeout();
                 }
-            }, 20000);
+            }, 20000000);
         }
     }
 
@@ -1585,4 +1585,5 @@ document.addEventListener('DOMContentLoaded', function() {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { SpeechBot, initt_v_a };
+
 }
