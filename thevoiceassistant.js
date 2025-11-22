@@ -1,4 +1,5 @@
-// speechbot.js - Complete fixed code with proper listening timing for both English and Telugu
+// speechbot.js - Full UI SpeechBot with enhanced features
+
 const link = document.createElement("link");
 link.rel = "icon";
 link.href = "data:,";
@@ -17,17 +18,15 @@ class SpeechBot {
         this.currentUtterance = null;
         this.isProcessingQueue = false;
         this.shouldBeListening = false;
+        this.shouldBeListeningAfterSpeech = false;
         this.autoCloseTimeout = null;
         this.isHidingResponse = false;
         this.currentLanguage = 'en';
         this.conversationState = 'idle';
         this.hasShownListeningMessage = false;
-        this.recognitionRestartTimeout = null;
-        this.isRecognitionStarting = false;
-        this.recognitionStartTime = 0;
-        this.silenceTimeout = null;
-        this.lastSpeechTime = 0;
-        this.userIsSpeaking = false;
+        this.currentAudio = null;
+        this.backendAudioElements = [];
+        this.noSpeechTimeout = null;
 
         // Translation API endpoints
         this.translateApiPath = '/translate';
@@ -37,34 +36,6 @@ class SpeechBot {
         this.teluguVoice = null;
         this.prefersBackendTTSFor = { te: false, en: false };
         this.backendTTSPath = '/tts';
-        
-        // Mobile detection
-        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        
-        // Audio context for mobile audio issues
-        this.audioContext = null;
-        this.audioElements = [];
-        
-        // Enhanced Greeting patterns with better Telugu matching
-        this.greetingPatterns = {
-            en: [
-                /\b(hi|hello|hey|greetings|good morning|good afternoon|good evening)\b/i,
-                /\b(how are you|how do you do)\b/i,
-                /\b(thank you|thanks|thankyou|I am Happy)\b/i,
-                /\b(no|nope|nah)\b/i,
-                /\b(yes|yeah|yep|sure)\b/i,
-                /\b(fine|good|well|ok|okay)\b/i
-            ],
-            te: [
-                /(నమస్కారం|హలో|హాయ్|హే|నమస్తే|హాయి|నమస్కారము)/i,
-                /(మీరు ఎలా ఉన్నారు|ఎలా ఉన్నారు|నువ్వు ఎలా ఉన్నావు|ఎలా ఉన్నావు)/i,
-                /(ధన్యవాదాలు|థాంక్యూ|థాంక్స్|సంతోషం|మంచిది|థాంక్సు)/i,
-                /(లేదు|కాదు|నో|అలాగే|నో ప్రాబ్లం)/i,
-                /(అవును|అవ్|హ|హమ్మ|యస్)/i,
-                /(బాగున్నాను|ఫైన్|గుడ్|సరే|ఓకే|బాగా ఉన్నాను)/i
-            ]
-        };
-        
         this.init();
     }
 
@@ -73,30 +44,13 @@ class SpeechBot {
         this.setupSpeechRecognition();
         this.setupTextToSpeech();
         this.addStyles();
-        this.setupAudioContext();
-    }
-
-    /* ---------- Audio Context Setup for Mobile ---------- */
-    setupAudioContext() {
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                this.audioContext = new AudioContext();
-                document.addEventListener('click', () => {
-                    if (this.audioContext && this.audioContext.state === 'suspended') {
-                        this.audioContext.resume();
-                    }
-                }, { once: true });
-            }
-        } catch (error) {
-            console.warn('AudioContext not supported:', error);
-        }
     }
 
     /* ---------- Styles & UI ---------- */
     addStyles() {
         const style = document.createElement('style');
         style.textContent = `
+            /* Voice Assistant Styles */
             .voice-assistant {
                 position: fixed;
                 bottom: 20px;
@@ -157,6 +111,7 @@ class SpeechBot {
                 display: flex;
             }
 
+            /* HEADER - FIXED LAYOUT */
             .chat-header {
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 color: white;
@@ -210,6 +165,7 @@ class SpeechBot {
                 75% { transform: translateY(-3px) rotate(-1deg); }
             }
 
+            /* LANGUAGE SELECTOR - RIGHT SIDE */
             .language-selector-wrapper {
                 display: flex;
                 align-items: center;
@@ -238,6 +194,7 @@ class SpeechBot {
                 color: #333;
             }
 
+            /* CLOSE BUTTON */
             .close-btn {
                 background: none;
                 border: none;
@@ -259,6 +216,7 @@ class SpeechBot {
                 background: rgba(255, 255, 255, 0.2);
             }
 
+            /* CHAT MESSAGES */
             .chat-messages {
                 flex: 1;
                 padding: 15px;
@@ -292,6 +250,7 @@ class SpeechBot {
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2);
             }
 
+            /* INPUT AREA */
             .chat-input-area {
                 border-top: 1px solid #e0e0e0;
                 background: white;
@@ -337,6 +296,7 @@ class SpeechBot {
                 animation: pulse 1.5s infinite;
             }
 
+            /* POWERED BY TEXT - DEFINITELY VISIBLE */
             .powered-by-tva {
                 text-align: center;
                 font-size: 11px;
@@ -354,6 +314,7 @@ class SpeechBot {
                 display: inline-block;
             }
 
+            /* Voice animation for assistant button */
             .voice-waves {
                 position: absolute;
                 top: 50%;
@@ -395,6 +356,7 @@ class SpeechBot {
                 }
             }
 
+            /* Typing indicator */
             .typing-indicator {
                 display: flex;
                 align-items: center;
@@ -433,6 +395,7 @@ class SpeechBot {
                 }
             }
 
+            /* Improved scrollbar */
             .chat-messages::-webkit-scrollbar {
                 width: 6px;
             }
@@ -451,6 +414,7 @@ class SpeechBot {
                 background: #a8a8a8;
             }
 
+            /* Prompt message */
             .prompt-message {
                 font-size: 12px;
                 color: #666;
@@ -544,6 +508,7 @@ class SpeechBot {
                 100% { background-position: 0% 50%; }
             }
 
+            /* Listening message styling */
             .listening-message {
                 font-style: italic;
                 color: #666;
@@ -553,27 +518,6 @@ class SpeechBot {
                 border-radius: 10px;
                 border: 1px solid #d1e7ff;
                 margin: 10px 0;
-            }
-
-            /* Mobile-specific styles */
-            @media (max-width: 480px) {
-                .voice-assistant {
-                    bottom: 10px;
-                    right: 10px;
-                }
-                
-                .chat-container {
-                    width: 95vw;
-                    height: 70vh;
-                    right: 2.5vw;
-                    bottom: 70px;
-                }
-                
-                .assistant-btn {
-                    width: 50px;
-                    height: 50px;
-                    font-size: 20px;
-                }
             }
         `;
         document.head.appendChild(style);
@@ -585,7 +529,9 @@ class SpeechBot {
         widget.className = 'voice-assistant';
         widget.innerHTML = `
             <div class="chat-container" id="speechbot-chat-container">
+                <!-- HEADER WITH PROPER LAYOUT -->
                 <div class="chat-header">
+                    <!-- LEFT SIDE: AI Assistant -->
                     <div class="header-section header-left">
                         <div class="assistant-title">
                             <img 
@@ -599,6 +545,7 @@ class SpeechBot {
                         </div>
                     </div>
                     
+                    <!-- RIGHT SIDE: Language Selector + Close Button -->
                     <div class="header-section header-right">
                         <div class="language-selector-wrapper">
                             <select id="languageSelector" class="lang-dropdown">
@@ -610,8 +557,10 @@ class SpeechBot {
                     </div>
                 </div>
                 
+                <!-- CHAT MESSAGES -->
                 <div class="chat-messages" id="chat-messages"></div>
                 
+                <!-- INPUT AREA -->
                 <div class="chat-input-area">
                     <div class="chat-input">
                         <input type="text" id="text-input" placeholder="Type your message...">
@@ -622,12 +571,14 @@ class SpeechBot {
                         </button>
                     </div>
                     
+                    <!-- POWERED BY TEXT - ADDED HERE -->
                     <div class="powered-by-tva">
                         <span>Powered by TVA - The Voice Assistant</span>
                     </div>
                 </div>
             </div>
             
+            <!-- FLOATING BUTTON -->
             <button class="assistant-btn" id="assistant-btn" title="Open assistant">
                 <div class="voice-waves" id="voice-waves" style="display: none;">
                     <div class="voice-wave"></div>
@@ -664,54 +615,57 @@ class SpeechBot {
             this.currentLanguage = e.target.value;
             this.updateRecognitionLanguage();
             this.loadVoices();
+            this.updateUITexts();
             if (document.getElementById('speechbot-chat-container').classList.contains('active')) {
                 this.startConversation();
             }
         });
+    }
 
-        // Add touch event for mobile
-        if (this.isMobile) {
-            document.getElementById('assistant-btn').addEventListener('touchstart', (e) => {
-                e.preventDefault();
-                this.toggleChat();
-            }, { passive: false });
+    updateUITexts() {
+        // Update placeholder text based on language
+        const textInput = document.getElementById('text-input');
+        if (this.currentLanguage === 'te') {
+            textInput.placeholder = 'మీ సందేశాన్ని టైప్ చేయండి...';
+        } else {
+            textInput.placeholder = 'Type your message...';
         }
     }
 
     updateRecognitionLanguage() {
         if (this.recognition) {
-            const langCode = this.currentLanguage === 'te' ? 'te-IN' : 'en-US';
-            this.recognition.lang = langCode;
-            console.log('Speech recognition language set to:', langCode);
+            this.recognition.lang = this.currentLanguage === 'te' ? 'te-IN' : 'en-US';
         }
     }
 
-    /* ---------- Speech Recognition - FIXED TIMING LOGIC ---------- */
+    /* ---------- Speech Recognition ---------- */
     setupSpeechRecognition() {
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const Recog = window.webkitSpeechRecognition || window.SpeechRecognition;
             this.recognition = new Recog();
 
-            // FIX: Better settings for continuous listening
-            this.recognition.continuous = true;
-            this.recognition.interimResults = true;
+            this.recognition.continuous = false;
+            this.recognition.interimResults = false;
             this.recognition.lang = 'en-US';
-            this.recognition.maxAlternatives = 3;
+            this.recognition.maxAlternatives = 1;
 
             this.recognition.onstart = () => {
-                console.log('Speech recognition started - microphone active');
                 this.isListening = true;
-                this.isRecognitionStarting = false;
-                this.recognitionStartTime = Date.now();
                 this.updateButtonState();
                 this.updateSendButtonToMic(true);
                 
-                // Start silence detection timeout
-                this.startSilenceDetection();
+                // Set 8-second timeout for no speech
+                this.noSpeechTimeout = setTimeout(() => {
+                    if (this.isListening) {
+                        this.recognition.stop();
+                        this.handleNoSpeech();
+                    }
+                }, 8000);
                 
+                // Only show listening message once per session
                 if (!this.hasShownListeningMessage) {
                     const listeningMessage = this.currentLanguage === 'te' 
-                        ? "🎤 వింటున్నాను... మీ ప్రశ్నను ఇప్పుడు మాట్లాడండి!" 
+                        ? "🎤 వింటున్నాను... ఇప్పుడు మీ ప్రశ్నను మాట్లాడండి!" 
                         : "🎤 Listening... Speak your question now!";
                     this.addMessage(listeningMessage, 'bot');
                     this.hasShownListeningMessage = true;
@@ -719,399 +673,157 @@ class SpeechBot {
             };
 
             this.recognition.onend = () => {
-                console.log('Speech recognition ended');
                 this.isListening = false;
-                this.isRecognitionStarting = false;
                 this.updateButtonState();
                 this.updateSendButtonToMic(false);
+                this.clearNoSpeechTimeout();
 
-                // Clear silence timeout when recognition ends
-                if (this.silenceTimeout) {
-                    clearTimeout(this.silenceTimeout);
-                    this.silenceTimeout = null;
-                }
-
-                // Only restart if we should be listening and no speech was detected
-                if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question' && !this.userIsSpeaking) {
-                    console.log('Auto-restarting speech recognition after normal end');
+                // Auto-restart listening only if we're supposed to be listening
+                if (this.shouldBeListening && !this.isSpeaking) {
                     setTimeout(() => {
-                        if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question' && !this.isRecognitionStarting) {
+                        if (this.shouldBeListening && !this.isSpeaking) {
                             this.startListening();
                         }
-                    }, 500);
+                    }, 100);
                 }
             };
 
             this.recognition.onresult = (event) => {
-                console.log('Speech recognition result received');
+                const transcript = event.results[0][0].transcript;
+                this.clearNoSpeechTimeout();
+                this.shouldBeListening = false;
+                this.hasShownListeningMessage = false;
+                this.updateSendButtonToMic(false);
+                this.addMessage(transcript, 'user');
+
+                this.showTypingIndicator();
                 
-                let finalTranscript = '';
-                let interimTranscript = '';
-
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript;
-                        console.log('Final result:', event.results[i][0].transcript, 'Confidence:', event.results[i][0].confidence);
-                        
-                        // Reset silence detection when we get final results
-                        this.resetSilenceDetection();
-                        
-                        // Log alternatives for debugging
-                        if (event.results[i].length > 1) {
-                            console.log('Alternative results:');
-                            for (let j = 1; j < event.results[i].length; j++) {
-                                console.log(`  Alt ${j}:`, event.results[i][j].transcript, 'Confidence:', event.results[i][j].confidence);
-                            }
-                        }
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                        // User is speaking - reset silence detection
-                        if (interimTranscript.trim().length > 0) {
-                            this.userIsSpeaking = true;
-                            this.resetSilenceDetection();
-                        }
-                    }
-                }
-
-                if (finalTranscript) {
-                    console.log('Final transcript:', finalTranscript);
-                    this.userIsSpeaking = false;
-                    
-                    // Stop auto-listening after getting valid user input
-                    this.shouldBeListening = false;
-                    this.hasShownListeningMessage = false;
-                    this.updateSendButtonToMic(false);
-                    this.addMessage(finalTranscript, 'user');
-
-                    if (this.isGreeting(finalTranscript)) {
-                        this.handleGreeting(finalTranscript);
-                    } else {
-                        this.showTypingIndicator();
-                        this.processUserInput(finalTranscript);
-                    }
-                } else if (interimTranscript) {
-                    console.log('Interim transcript:', interimTranscript);
+                // Check if it's a greeting or common phrase
+                const response = this.handleCommonPhrases(transcript);
+                if (response) {
+                    this.handleCommonResponse(response);
+                } else {
+                    this.processUserInput(transcript);
                 }
             };
 
             this.recognition.onerror = (event) => {
                 console.error('Speech recognition error:', event.error);
+                this.clearNoSpeechTimeout();
                 this.isListening = false;
-                this.isRecognitionStarting = false;
-                this.updateButtonState();
-                
-                // Clear silence timeout on error
-                if (this.silenceTimeout) {
-                    clearTimeout(this.silenceTimeout);
-                    this.silenceTimeout = null;
-                }
                 
                 if (event.error === 'no-speech') {
-                    console.log('No speech detected - this is normal during pauses');
-                    // Don't change shouldBeListening for no-speech errors
-                    this.userIsSpeaking = false;
+                    this.handleNoSpeech();
                 } else {
                     this.shouldBeListening = false;
-                    this.userIsSpeaking = false;
-                }
-                
-                this.hasShownListeningMessage = false;
-                this.updateSendButtonToMic(true, false);
+                    this.hasShownListeningMessage = false;
+                    this.updateButtonState();
+                    this.updateSendButtonToMic(false);
+                    
+                    let errorMessage = this.currentLanguage === 'te' 
+                        ? 'క్షమించండి, నేను ఒక సమస్యను ఎదుర్కొంటున్నాను. దయచేసి మళ్లీ ప్రయత్నించండి.' 
+                        : 'Sorry, I encountered an issue. Please try again.';
 
-                let errorMessage = this.currentLanguage === 'te' 
-                    ? 'క్షమించండి, సమస్య ఎదురైంది. దయచేసి మళ్లీ ప్రయత్నించండి.' 
-                    : 'Sorry, I encountered an issue. Please try again.';
+                    if (event.error === 'not-allowed') {
+                        errorMessage = this.currentLanguage === 'te'
+                            ? 'మైక్రోఫోన్ యాక్సెస్ నిరాకరించబడింది. దయచేసి మైక్రోఫోన్ అనుమతులను అనుమతించండి మరియు మళ్లీ ప్రయత్నించండి.'
+                            : 'Microphone access denied. Please allow microphone permissions and try again.';
+                    } else if (event.error === 'audio-capture') {
+                        errorMessage = this.currentLanguage === 'te'
+                            ? 'మైక్రోఫోన్ కనుగొనబడలేదు. దయచేసి మీ ఆడియో సెట్టింగ్లను తనిఖీ చేయండి.'
+                            : 'No microphone found. Please check your audio settings.';
+                    } else if (event.error === 'network') {
+                        errorMessage = this.currentLanguage === 'te'
+                            ? 'నెట్‌వర్క్ లోపం. దయచేసి మీ ఇంటర్నెట్ కనెక్షన్‌ను తనిఖీ చేయండి.'
+                            : 'Network error. Please check your internet connection.';
+                    }
 
-                if (event.error === 'not-allowed') {
-                    errorMessage = this.currentLanguage === 'te'
-                        ? 'మైక్రోఫోన్ యాక్సెస్ నిరాకరించబడింది. దయచేసి మైక్రోఫోన్ అనుమతులను అనుమతించండి మరియు మళ్లీ ప్రయత్నించండి.'
-                        : 'Microphone access denied. Please allow microphone permissions and try again.';
-                    this.shouldBeListening = false;
-                } else if (event.error === 'no-speech') {
-                    errorMessage = this.currentLanguage === 'te'
-                        ? 'మాట్లాడడం గుర్తించబడలేదు. దయచేసి మీ ప్రశ్నను మాట్లాడండి.'
-                        : 'No speech detected. Please speak your question.';
-                    // Keep listening for no-speech errors
-                    this.shouldBeListening = true;
-                } else if (event.error === 'audio-capture') {
-                    errorMessage = this.currentLanguage === 'te'
-                        ? 'మైక్రోఫోన్ కనబడలేదు. దయచేసి మీ ఆడియో సెట్టింగ్లను తనిఖీ చేయండి.'
-                        : 'No microphone found. Please check your audio settings.';
-                    this.shouldBeListening = false;
-                } else if (event.error === 'network') {
-                    errorMessage = this.currentLanguage === 'te'
-                        ? 'నెట్‌వర్క్ లోపం. దయచేసి మీ ఇంటర్నెట్ కనెక్షన్‌ను తనిఖీ చేయండి.'
-                        : 'Network error. Please check your internet connection.';
-                    this.shouldBeListening = false;
-                } else if (event.error === 'aborted') {
-                    console.log('Speech recognition aborted - normal during restarts');
-                    return;
-                }
-
-                if (event.error !== 'aborted' && event.error !== 'no-speech') {
                     this.addMessage(errorMessage, 'bot');
                 }
-
-                setTimeout(() => {
-                    if (this.conversationState === 'awaiting_question' && this.shouldBeListening) {
-                        this.showMicrophonePrompt();
-                    }
-                }, 1000);
-            };
-
-            this.recognition.onnomatch = () => {
-                console.log('No speech match found');
-                this.userIsSpeaking = false;
             };
         } else {
-            const errorMessage = this.currentLanguage === 'te'
-                ? 'మీ బ్రౌజర్‌లో స్పీచ్ రికగ్నిషన్‌కు మద్దతు లేదు. ఉత్తమ అనుభవం కోసం దయచేసి Google Chrome ఉపయోగించండి.'
-                : 'Speech recognition is not supported in your browser. Please use Google Chrome for the best experience.';
+            const errorMessage = 'Speech recognition is not supported in your browser. Please use Google Chrome for the best experience.';
             this.addMessage(errorMessage, 'bot');
         }
     }
 
-    /* ---------- Silence Detection for 20-second timeout ---------- */
-    startSilenceDetection() {
-        this.lastSpeechTime = Date.now();
-        
-        if (this.silenceTimeout) {
-            clearTimeout(this.silenceTimeout);
-        }
-        
-        this.silenceTimeout = setTimeout(() => {
-            console.log('20 seconds of silence detected - stopping listening');
-            this.stopListening();
-            this.showMicrophonePrompt();
-        }, 20000); // 20 seconds
-    }
-
-    resetSilenceDetection() {
-        this.lastSpeechTime = Date.now();
-        
-        if (this.silenceTimeout) {
-            clearTimeout(this.silenceTimeout);
-        }
-        
-        // Restart the silence detection
-        this.silenceTimeout = setTimeout(() => {
-            console.log('20 seconds of silence detected - stopping listening');
-            this.stopListening();
-            this.showMicrophonePrompt();
-        }, 20000);
-    }
-
-    /* ---------- Start Listening - IMPROVED ---------- */
-    startListening() {
-        if (!this.recognition || this.isSpeaking || this.isRecognitionStarting) {
-            console.log('Cannot start listening: busy or already starting');
-            return;
-        }
-        
-        try {
-            this.isRecognitionStarting = true;
-            this.userIsSpeaking = false;
-            this.updateRecognitionLanguage();
-            
-            if (this.recognitionRestartTimeout) {
-                clearTimeout(this.recognitionRestartTimeout);
-                this.recognitionRestartTimeout = null;
-            }
-            
-            if (this.silenceTimeout) {
-                clearTimeout(this.silenceTimeout);
-                this.silenceTimeout = null;
-            }
-            
-            if (this.isListening) {
-                try {
-                    this.recognition.stop();
-                } catch (e) {
-                    console.log('Error stopping recognition:', e);
-                }
-                
-                setTimeout(() => {
-                    this._actuallyStartListening();
-                }, 300);
-            } else {
-                this._actuallyStartListening();
-            }
-            
-        } catch (error) {
-            console.error('Failed to start recognition', error);
-            this.isRecognitionStarting = false;
-            setTimeout(() => {
-                if (this.conversationState === 'awaiting_question') {
-                    this.showMicrophonePrompt();
-                }
-            }, 1000);
+    clearNoSpeechTimeout() {
+        if (this.noSpeechTimeout) {
+            clearTimeout(this.noSpeechTimeout);
+            this.noSpeechTimeout = null;
         }
     }
 
-    _actuallyStartListening() {
-        try {
-            this.recognition.start();
-            this.shouldBeListening = true;
-            console.log('Attempting to start listening in language:', this.recognition.lang);
-        } catch (error) {
-            console.error('Failed in _actuallyStartListening:', error);
-            this.isRecognitionStarting = false;
-            
-            // Retry after a delay
-            if (this.conversationState === 'awaiting_question') {
-                setTimeout(() => {
-                    if (!this.isRecognitionStarting && this.shouldBeListening) {
-                        console.log('Retrying to start listening...');
-                        this.startListening();
-                    }
-                }, 1000);
-            }
-        }
+    handleNoSpeech() {
+        this.isListening = false;
+        this.updateButtonState();
+        
+        // Show prompt to click microphone
+        const promptMessage = this.currentLanguage === 'te'
+            ? "మాట్లాడడం గుర్తించబడలేదు. దయచేసి మళ్లీ మాట్లాడడానికి మైక్రోఫోన్‌పై క్లిక్ చేయండి."
+            : "No speech detected. Please click the microphone to speak again.";
+        
+        this.addMessage(promptMessage, 'bot');
+        
+        // Keep microphone enabled
+        this.updateSendButtonToMic(true, false);
+        this.shouldBeListening = false; // Don't auto-restart, wait for user click
     }
 
-    /* ---------- Stop Listening ---------- */
-    stopListening() {
-        if (this.recognition && (this.isListening || this.isRecognitionStarting)) {
-            try {
-                this.recognition.stop();
-            } catch (e) {
-                console.log('Error stopping recognition:', e);
-            }
-            this.isListening = false;
-            this.isRecognitionStarting = false;
-            this.shouldBeListening = false;
-            this.hasShownListeningMessage = false;
-            this.userIsSpeaking = false;
-            
-            if (this.recognitionRestartTimeout) {
-                clearTimeout(this.recognitionRestartTimeout);
-                this.recognitionRestartTimeout = null;
-            }
-            
-            if (this.silenceTimeout) {
-                clearTimeout(this.silenceTimeout);
-                this.silenceTimeout = null;
-            }
-            
-            this.updateButtonState();
-            this.updateSendButtonToMic(false);
-        }
-    }
-
-    /* ---------- Greeting Detection & Handling ---------- */
-    isGreeting(text) {
-        const patterns = this.greetingPatterns[this.currentLanguage] || this.greetingPatterns.en;
+    /* ---------- Common Phrases Handler ---------- */
+    handleCommonPhrases(input) {
+        const text = input.toLowerCase().trim();
         
-        if (this.currentLanguage === 'te') {
-            const teluguText = text.toLowerCase();
-            const commonTeluguGreetings = [
-                'హాయ్', 'హలో', 'నమస్కారం', 'నమస్తే', 'హే', 
-                'హాయి', 'నమస్కారము', 'హలో సర్', 'హలో మాడం'
-            ];
-            
-            const hasTeluguGreeting = commonTeluguGreetings.some(greeting => 
-                teluguText.includes(greeting.toLowerCase())
-            );
-            
-            return hasTeluguGreeting || patterns.some(pattern => pattern.test(text));
-        }
-        
-        return patterns.some(pattern => pattern.test(text));
-    }
-
-    handleGreeting(userInput) {
-        console.log('Handling greeting:', userInput, 'Language:', this.currentLanguage);
-        
-        const greetingResponse = this.getGreetingResponse(userInput);
-        
-        this.addMessage(greetingResponse.display, 'bot');
-        this.speechQueue = [];
-        this.speakWithNaturalVoice(greetingResponse.speak, false);
-    }
-
-    getGreetingResponse(userInput) {
-        const lowerInput = userInput.toLowerCase();
-        
-        if (this.currentLanguage === 'en') {
-            if (/\b(hi|hello|hey|greetings|good morning|good afternoon|good evening)\b/i.test(lowerInput)) {
-                return {
-                    display: "Hello! Welcome! I'm here to help you learn more about this organization. Feel free to ask me any questions.",
-                    speak: "Hello! Welcome! I'm here to help you learn more about this organization. Feel free to ask me any questions."
-                };
-            } else if (/\b(how are you|how do you do)\b/i.test(lowerInput)) {
-                return {
-                    display: "I'm doing great, thank you! I'm here and ready to help you with any questions about this organization.",
-                    speak: "I'm doing great, thank you! I'm here and ready to help you with any questions about this organization."
-                };
-            } else if (/\b(thank you|thanks|thankyou|I am Happy)\b/i.test(lowerInput)) {
-                return {
-                    display: "You're welcome! I'm happy to help. Is there anything else you'd like to know about this organization?",
-                    speak: "You're welcome! I'm happy to help. Is there anything else you'd like to know about this organization?"
-                };
-            } else if (/\b(no|nope|nah)\b/i.test(lowerInput)) {
-                return {
-                    display: "No problem! I'm here whenever you need assistance. Feel free to ask me anything about this organization.",
-                    speak: "No problem! I'm here whenever you need assistance. Feel free to ask me anything about this organization."
-                };
-            } else if (/\b(yes|yeah|yep|sure)\b/i.test(lowerInput)) {
-                return {
-                    display: "Great! What would you like to know about this organization? I'm here to answer all your questions.",
-                    speak: "Great! What would you like to know about this organization? I'm here to answer all your questions."
-                };
-            } else if (/\b(fine|good|well|ok|okay)\b/i.test(lowerInput)) {
-                return {
-                    display: "That's good to hear! How can I assist you with information about this organization today?",
-                    speak: "That's good to hear! How can I assist you with information about this organization today?"
-                };
-            }
-        }
-        else if (this.currentLanguage === 'te') {
-            const teluguInput = userInput.toLowerCase();
-            
-            if (/(నమస్కారం|హలో|హాయ్|హే|నమస్తే|హాయి|నమస్కారము)/i.test(teluguInput)) {
-                return {
-                    display: "నమస్కారం! స్వాగతం! ఈ సంస్థ గురించి మీకు ఏమి తెలుసుకోవాలని ఉంది? నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను.",
-                    speak: "నమస్కారం! స్వాగతం! ఈ సంస్థ గురించి మీకు ఏమి తెలుసుకోవాలని ఉంది? నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను."
-                };
-            } else if (/(మీరు ఎలా ఉన్నారు|ఎలా ఉన్నారు|నువ్వు ఎలా ఉన్నావు|ఎలా ఉన్నావు)/i.test(teluguInput)) {
-                return {
-                    display: "నేను చాలా బాగున్నాను, ధన్యవాదాలు! ఈ సంస్థ గురించి మీ ప్రశ్నలకు సమాధానం ఇవ్వడానికి నేను సిద్ధంగా ఉన్నాను.",
-                    speak: "నేను చాలా బాగున్నాను, ధన్యవాదాలు! ఈ సంస్థ గురించి మీ ప్రశ్నలకు సమాధానం ఇవ్వడానికి నేను సిద్ధంగా ఉన్నాను."
-                };
-            } else if (/(ధన్యవాదాలు|థాంక్యూ|థాంక్స్|సంతోషం|మంచిది|థాంక్సు)/i.test(teluguInput)) {
-                return {
-                    display: "స్వాగతం! మీకు సహాయం చేయడం నాకు సంతోషం. ఈ సంస్థ గురించి మీకు ఇంకా ఏమి తెలుసుకోవాలని ఉంది?",
-                    speak: "స్వాగతం! మీకు సహాయం చేయడం నాకు సంతోషం. ఈ సంస్థ గురించి మీకు ఇంకా ఏమి తెలుసుకోవాలని ఉంది?"
-                };
-            } else if (/(లేదు|కాదు|నో|అలాగే|నో ప్రాబ్లం)/i.test(teluguInput)) {
-                return {
-                    display: "పర్వాలేదు! మీకు సహాయం కావలసినప్పుడల్లా నేను ఇక్కడే ఉంటాను. ఈ సంస్థ గురించి మీరు ఏదైనా అడగవచ్చు.",
-                    speak: "పర్వాలేదు! మీకు సహాయం కావలసినప్పుడల్లా నేను ఇక్కడే ఉంటాను. ఈ సంస్థ గురించి మీరు ఏదైనా అడగవచ్చు."
-                };
-            } else if (/(అవును|అవ్|హ|హమ్మ|యస్)/i.test(teluguInput)) {
-                return {
-                    display: "అద్భుతం! ఈ సంస్థ గురించి మీరు ఏమి తెలుసుకోవాలనుకుంటున్నారు? మీ అన్ని ప్రశ్నలకు నేను సమాధానం ఇస్తాను.",
-                    speak: "అద్భుతం! ఈ సంస్థ గురించి మీరు ఏమి తెలుసుకోవాలనుకుంటున్నారు? మీ అన్ని ప్రశ్నలకు నేను సమాధానం ఇస్తాను."
-                };
-            } else if (/(బాగున్నాను|ఫైన్|గుడ్|సరే|ఓకే|బాగా ఉన్నాను)/i.test(teluguInput)) {
-                return {
-                    display: "అది వినడానికి బాగుంది! ఈ సంస్థ గురించి నేను ఈరోజు మీకు ఎలా సహాయం చేయగలను?",
-                    speak: "అది వినడానికి బాగుంది! ఈ సంస్థ గురించి నేను ఈరోజు మీకు ఎలా సహాయం చేయగలను?"
-                };
-            }
-            
-            if (teluguInput.length <= 20) {
-                return {
-                    display: "నమస్కారం! స్వాగతం! ఈ సంస్థ గురించి మీకు ఏమి తెలుసుకోవాలని ఉంది? నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను.",
-                    speak: "నమస్కారం! స్వాగతం! ఈ సంస్థ గురించి మీకు ఏమి తెలుసుకోవాలని ఉంది? నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను."
-                };
-            }
-        }
-
-        return {
-            display: "Hello! I'm here to help you learn more about this organization. What would you like to know?",
-            speak: "Hello! I'm here to help you learn more about this organization. What would you like to know?"
+        // English greetings and common phrases
+        const englishPhrases = {
+            greetings: ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'namaste'],
+            thanks: ['thank you', 'thanks', 'thank you very much', 'thanks a lot', 'appreciate it', 'i am good'],
+            bye: ['bye', 'goodbye', 'see you', 'take care', 'have a good day'],
+            howareyou: ['how are you', 'how are you doing', "how's it going", "what's up"]
         };
+
+        // Telugu greetings and common phrases
+        const teluguPhrases = {
+            greetings: ['నమస్కారం', 'హలో', 'హాయ్', 'ఎలా ఉన్నారు', 'శుభోదయం', 'శుభ మద్యాహ్నం', 'శుభ సాయంత్రం'],
+            thanks: ['ధన్యవాదాలు', 'మీకు ధన్యవాదాలు', 'చాలా ధన్యవాదాలు', 'కృతజ్ఞతలు','థాంక్యూ'],
+            bye: ['బై', 'వీడ్కోలు', 'తర్వాత కలుద్దాం', 'జాగ్రత్త', 'మంచి రోజు అగునుగాక'],
+            howareyou: ['మీరు ఎలా ఉన్నారు', 'ఎలా ఉన్నారు', 'సరేనా', 'ఏమిటి సంగతులు']
+        };
+
+        const phrases = this.currentLanguage === 'te' ? teluguPhrases : englishPhrases;
+
+        // Check for matches
+        if (phrases.greetings.some(phrase => text.includes(phrase))) {
+            return this.currentLanguage === 'te' 
+                ? { type: 'greeting', text: 'నమస్కారం! మీకు ఎలా సహాయపడగలను?' }
+                : { type: 'greeting', text: 'Hello! How may I help you?' };
+        }
+        
+        if (phrases.thanks.some(phrase => text.includes(phrase))) {
+            return this.currentLanguage === 'te'
+                ? { type: 'thanks', text: 'మీకు సహాయం చేయగలిగినందుకు నేను సంతోషంగా ఉన్నాను! మీకు ఇంకేమైనా సహాయం కావాలా?' }
+                : { type: 'thanks', text: 'I am happy to help you! Is there anything else you need assistance with?' };
+        }
+        
+        if (phrases.bye.some(phrase => text.includes(phrase))) {
+            return this.currentLanguage === 'te'
+                ? { type: 'bye', text: 'థాంక్యూ ,మీరు మళ్ళి కలవాలి అని కోరుకుంటున్నాను' }
+                : { type: 'bye', text: 'Goodbye! Feel free to come back if you have more questions. Have a great day!' };
+        }
+        
+        if (phrases.howareyou.some(phrase => text.includes(phrase))) {
+            return this.currentLanguage === 'te'
+                ? { type: 'howareyou', text: 'నేను చాలా బాగున్నాను, ధన్యవాదాలు! మీకు ఎలా సహాయపడగలను?' }
+                : { type: 'howareyou', text: 'I am doing great, thank you! How can I assist you today?' };
+        }
+
+        return null;
+    }
+
+    handleCommonResponse(response) {
+        this.addMessage(response.text, 'bot');
+        this.speechQueue = [];
+        this.speakWithNaturalVoice(response.text, true);
     }
 
     /* ---------- Text-to-Speech Setup ---------- */
@@ -1175,15 +887,6 @@ class SpeechBot {
     }
 
     async processUserInput(input) {
-        console.log('Processing user input:', input, 'Language:', this.currentLanguage);
-        
-        if (this.isGreeting(input)) {
-            console.log('Input detected as greeting');
-            this.handleGreeting(input);
-            return;
-        }
-
-        console.log('Input treated as regular question');
         let processedQuestion = input;
         
         if (this.currentLanguage === 'te') {
@@ -1200,17 +903,12 @@ class SpeechBot {
 
     /* ---------- Core speech queue & speaking ---------- */
     speakWithNaturalVoice(text, isAnswer = false, isFollowUp = false) {
-        const chatContainer = document.getElementById('speechbot-chat-container');
-        if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-            console.log('Chat is closed - not adding speech to queue');
-            return;
-        }
-
         if (!this.synthesis && !this.prefersBackendTTSFor.en && !this.prefersBackendTTSFor.te) {
             console.warn('No speech synthesis available and backend not configured.');
             return;
         }
 
+        // Reset hiding response flag when starting new speech
         this.isHidingResponse = false;
 
         this.speechQueue.push({
@@ -1235,12 +933,10 @@ class SpeechBot {
             return;
         }
 
-        const chatContainer = document.getElementById('speechbot-chat-container');
-        if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-            console.log('Chat is closed - clearing speech queue');
+        if (this.isHidingResponse) {
+            console.log('Skipping speech - response is being hidden');
             this.speechQueue = [];
             this.isProcessingQueue = false;
-            this.stopSpeech();
             return;
         }
 
@@ -1257,11 +953,6 @@ class SpeechBot {
             this.isSpeaking = true;
             this.currentUtterance = null;
 
-            if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                console.log('Chat closed during speech preparation - cancelling');
-                throw new Error('Chat closed');
-            }
-
             if (useBackend) {
                 await this._speakViaBackend(text, langKey);
             } else {
@@ -1269,10 +960,7 @@ class SpeechBot {
             }
         } catch (err) {
             console.error('Error during speech:', err);
-            
-            if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                console.log('Chat closed - skipping fallback');
-            } else if (useBackend && (langKey === 'te' ? this.teluguVoice : this.englishVoice)) {
+            if (useBackend && (langKey === 'te' ? this.teluguVoice : this.englishVoice)) {
                 console.log('Backend failed — falling back to browser voice');
                 try {
                     await this._speakViaBrowser(text, langKey);
@@ -1286,13 +974,6 @@ class SpeechBot {
             this.currentUtterance = null;
 
             setTimeout(() => {
-                if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                    console.log('Chat closed - stopping speech queue processing');
-                    this.speechQueue = [];
-                    this.isProcessingQueue = false;
-                    return;
-                }
-
                 if (this.speechQueue.length > 0 && !this.isHidingResponse) {
                     this.processSpeechQueue();
                 } else {
@@ -1315,35 +996,28 @@ class SpeechBot {
             utterance.voice = (langKey === 'te' ? this.teluguVoice : this.englishVoice) || null;
 
             if (langKey === 'te') {
-                utterance.rate = this.isMobile ? 1.0 : 1.1;
+                utterance.rate = 1.1;
                 utterance.pitch = 1.0;
             } else {
-                utterance.rate = this.isMobile ? 0.99 : 0.95;
+                utterance.rate = 0.95;
                 utterance.pitch = 1.03;
             }
             utterance.volume = 0.95;
 
             utterance.onstart = () => {
-                const chatContainer = document.getElementById('speechbot-chat-container');
-                if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                    console.log('Chat closed during speech start - cancelling');
-                    this.synthesis.cancel();
-                    resolve();
-                    return;
-                }
-                
                 this.isSpeaking = true;
                 this.currentUtterance = utterance;
                 this.resetAutoCloseTimeout();
             };
 
             utterance.onend = () => {
-                console.log('Browser TTS ended successfully');
+                this.isSpeaking = false;
                 resolve();
             };
 
             utterance.onerror = (e) => {
                 console.error('SpeechSynthesisUtterance error:', e);
+                this.isSpeaking = false;
                 resolve();
             };
 
@@ -1352,20 +1026,14 @@ class SpeechBot {
             } catch (e) { }
 
             setTimeout(() => {
-                const chatContainer = document.getElementById('speechbot-chat-container');
-                if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                    console.log('Chat closed right before speaking - cancelling');
-                    resolve();
-                    return;
-                }
-
                 try {
                     this.synthesis.speak(utterance);
                 } catch (err) {
                     console.error('speak() threw:', err);
+                    this.isSpeaking = false;
                     resolve();
                 }
-            }, 200);
+            }, 180);
         });
     }
 
@@ -1377,10 +1045,7 @@ class SpeechBot {
             const response = await fetch(ttsUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    text: this._preprocessTextForLanguage(text, langKey), 
-                    lang: langParam 
-                })
+                body: JSON.stringify({ text: this._preprocessTextForLanguage(text, langKey), lang: langParam })
             });
 
             if (!response.ok) {
@@ -1392,13 +1057,7 @@ class SpeechBot {
 
             await this._playAudioFromURL(audioURL);
 
-            setTimeout(() => {
-                try {
-                    URL.revokeObjectURL(audioURL);
-                } catch (e) {
-                    console.warn('Error revoking audio URL:', e);
-                }
-            }, 3000);
+            setTimeout(() => URL.revokeObjectURL(audioURL), 5000);
         } catch (err) {
             console.error('Backend TTS error:', err);
             throw err;
@@ -1407,11 +1066,6 @@ class SpeechBot {
 
     _preprocessTextForLanguage(text, langKey) {
         let t = text.trim();
-        t = t.replace(/[.,;!?]+$/, '');
-        
-        if (this.isMobile && langKey === 'te') {
-            t = t + ' ';
-        }
 
         if (t.length > 600) {
             t = t.substring(0, 600) + '...';
@@ -1422,113 +1076,113 @@ class SpeechBot {
 
     _playAudioFromURL(url) {
         return new Promise((resolve, reject) => {
-            const chatContainer = document.getElementById('speechbot-chat-container');
-            if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                console.log('Chat closed - skipping audio playback');
-                resolve();
-                return;
-            }
-
+            // Create new audio element
             const audio = new Audio(url);
             audio.volume = 0.95;
             
-            audio.addEventListener('loadedmetadata', () => {
-                console.log('Audio loaded, duration:', audio.duration);
-            });
+            // Store reference to track all audio elements
+            this.backendAudioElements.push(audio);
+            this.currentAudio = audio;
             
-            audio.addEventListener('canplaythrough', () => {
-                console.log('Audio can play through');
-            });
-            
-            const checkChatClosed = () => {
-                if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                    console.log('Chat closed during audio playback - stopping');
-                    audio.pause();
-                    audio.currentTime = 0;
-                    resolve();
+            const cleanup = () => {
+                this.isSpeaking = false;
+                const index = this.backendAudioElements.indexOf(audio);
+                if (index > -1) {
+                    this.backendAudioElements.splice(index, 1);
                 }
-            };
-            
-            const intervalId = setInterval(checkChatClosed, 500);
-            
-            audio.addEventListener('ended', () => {
-                console.log('Audio playback ended naturally');
-                clearInterval(intervalId);
-                setTimeout(() => {
-                    resolve();
-                }, 100);
-            });
-            
-            audio.addEventListener('error', (e) => {
-                console.error('Audio playback error', e, audio.error);
-                clearInterval(intervalId);
-                try {
-                    audio.pause();
-                    audio.currentTime = 0;
-                } catch (err) {
-                    console.warn('Error cleaning up audio:', err);
+                if (this.currentAudio === audio) {
+                    this.currentAudio = null;
                 }
                 resolve();
-            });
-            
-            const playAudio = () => {
-                const playPromise = audio.play();
-                if (playPromise !== undefined) {
-                    playPromise.then(() => {
-                        console.log('Audio playback started successfully');
-                    }).catch((err) => {
-                        console.warn('Autoplay blocked, attempting fallback:', err);
-                        clearInterval(intervalId);
-                        
-                        if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                            console.log('Chat closed - skipping fallback');
-                            resolve();
-                        } else if ((this.currentLanguage === 'te' && this.teluguVoice) || (this.currentLanguage !== 'te' && this.englishVoice)) {
-                            const text = this.speechQueue[0]?.text || 'Sorry, there was an audio issue.';
-                            this._speakViaBrowser(text, this.currentLanguage === 'te' ? 'te' : 'en').then(resolve).catch(resolve);
-                        } else {
-                            resolve();
-                        }
-                    });
-                }
             };
-
-            if (this.audioContext && this.audioContext.state === 'suspended') {
-                this.audioContext.resume().then(() => {
-                    playAudio();
-                }).catch(err => {
-                    console.warn('Failed to resume audio context:', err);
-                    playAudio();
+            
+            audio.onended = cleanup;
+            audio.onerror = (e) => {
+                console.error('Audio playback error', e);
+                cleanup();
+            };
+            
+            const playPromise = audio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    this.isSpeaking = true;
+                }).catch((err) => {
+                    console.warn('Autoplay blocked, attempting fallback to speechSynthesis', err);
+                    cleanup();
+                    if ((this.currentLanguage === 'te' && this.teluguVoice) || (this.currentLanguage !== 'te' && this.englishVoice)) {
+                        this._speakViaBrowser(url, this.currentLanguage === 'te' ? 'te' : 'en').then(resolve).catch(resolve);
+                    } else {
+                        resolve();
+                    }
                 });
             } else {
-                playAudio();
+                resolve();
             }
         });
     }
 
-    /* ---------- Post-speech actions & auto listening - FIXED ---------- */
+    /* ---------- STOP ALL SPEECH METHODS ---------- */
+    stopAllSpeech() {
+        console.log('Stopping all speech...');
+        
+        // Stop browser TTS
+        if (this.synthesis) {
+            try {
+                this.synthesis.cancel();
+            } catch (e) {
+                console.error('Error stopping browser TTS:', e);
+            }
+        }
+        
+        // Stop all backend TTS audio elements
+        this.backendAudioElements.forEach(audio => {
+            try {
+                audio.pause();
+                audio.currentTime = 0;
+            } catch (e) {
+                console.error('Error stopping backend TTS audio:', e);
+            }
+        });
+        this.backendAudioElements = [];
+        this.currentAudio = null;
+        
+        // Clear speech queue
+        this.speechQueue = [];
+        
+        // Reset states
+        this.isSpeaking = false;
+        this.currentUtterance = null;
+        this.isProcessingQueue = false;
+    }
+
+    stopSpeech() {
+        this.stopAllSpeech();
+    }
+
+    /* ---------- Post-speech actions & auto listening ---------- */
     handlePostSpeechActions(isAnswer, isFollowUp) {
         const chatContainer = document.getElementById('speechbot-chat-container');
 
         if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
+            this.shouldBeListeningAfterSpeech = false;
             return;
         }
 
-        // After answering a question, show microphone prompt but don't auto-listen
+        // Show microphone prompt after answer is spoken
         if (isAnswer) {
-            console.log('Answer completed - showing microphone prompt');
             this.showMicrophonePrompt();
-            this.conversationState = 'idle';
-        } else {
-            // After greeting, auto-listen for the user's question
-            console.log('Greeting completed - AUTO-LISTENING ENABLED');
-            this.shouldBeListening = true;
-            this.conversationState = 'awaiting_question';
-            this.hasShownListeningMessage = false;
             
+            // DO NOT auto-start listening after answer - wait for user to click microphone
+            this.shouldBeListening = false;
+        }
+
+        // Auto-start listening after welcome message (first interaction)
+        if (this.conversationState === 'awaiting_question' && !isAnswer) {
+            console.log('Starting listening after welcome message');
+            this.shouldBeListening = true;
+            this.hasShownListeningMessage = false;
             setTimeout(() => {
-                if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
-                    console.log('Auto-starting listening after greeting');
+                if (!this.isSpeaking && this.shouldBeListening) {
                     this.startListening();
                 }
             }, 1500);
@@ -1540,10 +1194,9 @@ class SpeechBot {
         const promptDiv = document.createElement('div');
         promptDiv.className = 'prompt-message';
         
-        let promptText = 'Click on the microphone to ask more questions';
-        if (this.currentLanguage === 'te') {
-            promptText = 'మరిన్ని ప్రశ్నలు అడగడానికి మైక్రోఫోన్‌పై క్లిక్ చేయండి';
-        }
+        let promptText = this.currentLanguage === 'te' 
+            ? 'మరిన్ని ప్రశ్నలు అడగడానికి మైక్రోఫోన్‌పై క్లిక్ చేయండి'
+            : 'Click on the microphone to ask more questions';
 
         promptDiv.innerHTML = `
             <svg width="16" height="16" viewBox="0 0 24 24" fill="#666">
@@ -1555,6 +1208,7 @@ class SpeechBot {
         chatMessages.appendChild(promptDiv);
         chatMessages.scrollTop = chatMessages.scrollHeight;
         
+        // Change send button to microphone
         this.updateSendButtonToMic(true, false);
     }
 
@@ -1600,30 +1254,36 @@ class SpeechBot {
                 } else {
                     this.resetAutoCloseTimeout();
                 }
-            }, 20000000);
+            }, 20000);
         }
     }
 
-    stopSpeech() {
-        if (this.synthesis) {
+    stopListening() {
+        if (this.recognition && this.isListening) {
             try {
-                this.synthesis.cancel();
+                this.recognition.stop();
             } catch (e) { }
+            this.isListening = false;
+            this.shouldBeListening = false;
+            this.hasShownListeningMessage = false;
+            this.updateButtonState();
+            this.updateSendButtonToMic(false);
+            this.clearNoSpeechTimeout();
         }
-        
-        this.audioElements.forEach(audio => {
-            try {
-                audio.pause();
-                audio.currentTime = 0;
-                audio.src = '';
-                audio.load();
-            } catch (e) { }
-        });
-        this.audioElements = [];
-        
-        this.isSpeaking = false;
-        this.currentUtterance = null;
-        this.speechQueue = [];
+    }
+
+    startListening() {
+        if (!this.recognition || this.isSpeaking) return;
+        try {
+            this.updateRecognitionLanguage();
+            this.recognition.start();
+            this.shouldBeListening = true;
+        } catch (error) {
+            console.error('Failed to start recognition', error);
+            setTimeout(() => {
+                this.showMicrophonePrompt();
+            }, 1000);
+        }
     }
 
     updateButtonState() {
@@ -1665,24 +1325,31 @@ class SpeechBot {
                 this.addMessage(translatedMessage, 'bot');
                 this.speechQueue = [];
                 this.speakWithNaturalVoice(translatedMessage, false);
+                this.shouldBeListeningAfterSpeech = true;
             } catch (error) {
                 console.error('Welcome translation failed:', error);
                 this.addMessage(displayMessage, 'bot');
                 this.speechQueue = [];
                 this.speakWithNaturalVoice(speakMessage, false);
+                this.shouldBeListeningAfterSpeech = true;
             }
         } else {
             this.addMessage(displayMessage, 'bot');
             this.speechQueue = [];
             this.speakWithNaturalVoice(speakMessage, false);
+            this.shouldBeListeningAfterSpeech = true;
         }
     }
 
     getWelcomeMessage() {
         if (!this.hasWelcomed) {
-            return "Hello! I am here to help you. You can ask me any questions.";
+            return this.currentLanguage === 'te' 
+                ? "నమస్కారం! నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను. మీరు నన్ను ఏవైనా ప్రశ్నలు అడగవచ్చు." 
+                : "Hello! I am here to help you. You can ask me any questions.";
         } else {
-            return "I am listening. Please ask your question.";
+            return this.currentLanguage === 'te'
+                ? "నేను వింటున్నాను. దయచేసి మీ ప్రశ్నను అడగండి."
+                : "I am listening. Please ask your question.";
         }
     }
 
@@ -1818,21 +1485,18 @@ class SpeechBot {
 
         this.isHidingResponse = true;
 
+        // STOP ALL SPEECH when hiding chat
+        this.stopAllSpeech();
         this.stopListening();
-        this.stopSpeech();
         this.conversationState = 'idle';
         this.shouldBeListening = false;
+        this.shouldBeListeningAfterSpeech = false;
         this.hasShownListeningMessage = false;
         this.updateSendButtonToMic(false);
-
-        if (this.recognitionRestartTimeout) {
-            clearTimeout(this.recognitionRestartTimeout);
-            this.recognitionRestartTimeout = null;
-        }
+        this.clearNoSpeechTimeout();
 
         if (this.autoCloseTimeout) {
             clearTimeout(this.autoCloseTimeout);
-            this.autoCloseTimeout = null;
         }
     }
 
@@ -1843,8 +1507,10 @@ class SpeechBot {
         if (message) {
             this.addMessage(message, 'user');
             
-            if (this.isGreeting(message)) {
-                this.handleGreeting(message);
+            // Check if it's a greeting or common phrase
+            const response = this.handleCommonPhrases(message);
+            if (response) {
+                this.handleCommonResponse(response);
             } else {
                 this.showTypingIndicator();
                 this.processUserInput(message);
