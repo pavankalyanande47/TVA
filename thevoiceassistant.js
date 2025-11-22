@@ -1,4 +1,4 @@
-// speechbot.js - Complete fixed code with mobile audio fix for "uss" sound
+// speechbot.js - Complete fixed code for mobile microphone stability
 const link = document.createElement("link");
 link.rel = "icon";
 link.href = "data:,";
@@ -22,6 +22,8 @@ class SpeechBot {
         this.currentLanguage = 'en';
         this.conversationState = 'idle';
         this.hasShownListeningMessage = false;
+        this.recognitionRestartTimeout = null;
+        this.isRecognitionStarting = false;
 
         // Translation API endpoints
         this.translateApiPath = '/translate';
@@ -73,11 +75,9 @@ class SpeechBot {
     /* ---------- Audio Context Setup for Mobile ---------- */
     setupAudioContext() {
         try {
-            // Create audio context for better mobile audio handling
             const AudioContext = window.AudioContext || window.webkitAudioContext;
             if (AudioContext) {
                 this.audioContext = new AudioContext();
-                // Resume audio context on user interaction (required for mobile)
                 document.addEventListener('click', () => {
                     if (this.audioContext && this.audioContext.state === 'suspended') {
                         this.audioContext.resume();
@@ -682,20 +682,22 @@ class SpeechBot {
         }
     }
 
-    /* ---------- Speech Recognition ---------- */
+    /* ---------- Speech Recognition - FIXED FOR MOBILE ---------- */
     setupSpeechRecognition() {
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const Recog = window.webkitSpeechRecognition || window.SpeechRecognition;
             this.recognition = new Recog();
 
+            // FIX: Stable settings for mobile
             this.recognition.continuous = true;
-            this.recognition.interimResults = false;
+            this.recognition.interimResults = true;
             this.recognition.lang = 'en-US';
             this.recognition.maxAlternatives = 1;
 
             this.recognition.onstart = () => {
-                console.log('Speech recognition started');
+                console.log('Speech recognition started - microphone active');
                 this.isListening = true;
+                this.isRecognitionStarting = false;
                 this.updateButtonState();
                 this.updateSendButtonToMic(true);
                 
@@ -711,39 +713,61 @@ class SpeechBot {
             this.recognition.onend = () => {
                 console.log('Speech recognition ended');
                 this.isListening = false;
+                this.isRecognitionStarting = false;
                 this.updateButtonState();
                 this.updateSendButtonToMic(false);
 
+                // FIX: Conservative auto-restart for mobile
                 if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question') {
-                    console.log('Auto-restarting speech recognition');
-                    setTimeout(() => {
-                        if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question') {
+                    console.log('Considering auto-restart for mobile');
+                    if (this.recognitionRestartTimeout) {
+                        clearTimeout(this.recognitionRestartTimeout);
+                    }
+                    
+                    this.recognitionRestartTimeout = setTimeout(() => {
+                        if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question' && !this.isRecognitionStarting) {
+                            console.log('Auto-restarting speech recognition after delay');
                             this.startListening();
                         }
-                    }, 500);
+                    }, this.isMobile ? 1000 : 500);
                 }
             };
 
             this.recognition.onresult = (event) => {
                 console.log('Speech recognition result received');
-                const transcript = event.results[event.results.length - 1][0].transcript;
                 
-                this.shouldBeListening = false;
-                this.hasShownListeningMessage = false;
-                this.updateSendButtonToMic(false);
-                this.addMessage(transcript, 'user');
+                let finalTranscript = '';
+                let interimTranscript = '';
 
-                if (this.isGreeting(transcript)) {
-                    this.handleGreeting(transcript);
-                } else {
-                    this.showTypingIndicator();
-                    this.processUserInput(transcript);
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        interimTranscript += event.results[i][0].transcript;
+                    }
+                }
+
+                if (finalTranscript) {
+                    console.log('Final transcript:', finalTranscript);
+                    
+                    this.shouldBeListening = false;
+                    this.hasShownListeningMessage = false;
+                    this.updateSendButtonToMic(false);
+                    this.addMessage(finalTranscript, 'user');
+
+                    if (this.isGreeting(finalTranscript)) {
+                        this.handleGreeting(finalTranscript);
+                    } else {
+                        this.showTypingIndicator();
+                        this.processUserInput(finalTranscript);
+                    }
                 }
             };
 
             this.recognition.onerror = (event) => {
                 console.error('Speech recognition error:', event.error);
                 this.isListening = false;
+                this.isRecognitionStarting = false;
                 this.shouldBeListening = false;
                 this.hasShownListeningMessage = false;
                 this.updateButtonState();
@@ -758,24 +782,35 @@ class SpeechBot {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మైక్రోఫోన్ యాక్సెస్ నిరాకరించబడింది. దయచేసి మైక్రోఫోన్ అనుమతులను అనుమతించండి మరియు మళ్లీ ప్రయత్నించండి.'
                         : 'Microphone access denied. Please allow microphone permissions and try again.';
+                    this.shouldBeListening = false;
                 } else if (event.error === 'no-speech') {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మాట్లాడడం గుర్తించబడలేదు. దయచేసి మీ ప్రశ్నను మాట్లాడండి.'
                         : 'No speech detected. Please speak your question.';
+                    if (!this.isMobile) {
+                        this.shouldBeListening = true;
+                    }
                 } else if (event.error === 'audio-capture') {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మైక్రోఫోన్ కనబడలేదు. దయచేసి మీ ఆడియో సెట్టింగ్లను తనిఖీ చేయండి.'
                         : 'No microphone found. Please check your audio settings.';
+                    this.shouldBeListening = false;
                 } else if (event.error === 'network') {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'నెట్‌వర్క్ లోపం. దయచేసి మీ ఇంటర్నెట్ కనెక్షన్‌ను తనిఖీ చేయండి.'
                         : 'Network error. Please check your internet connection.';
+                    this.shouldBeListening = false;
+                } else if (event.error === 'aborted') {
+                    console.log('Speech recognition aborted - normal during restarts');
+                    return;
                 }
 
-                this.addMessage(errorMessage, 'bot');
-                
+                if (event.error !== 'aborted') {
+                    this.addMessage(errorMessage, 'bot');
+                }
+
                 setTimeout(() => {
-                    if (this.conversationState === 'awaiting_question') {
+                    if (this.conversationState === 'awaiting_question' && this.shouldBeListening) {
                         this.showMicrophonePrompt();
                     }
                 }, 1000);
@@ -789,6 +824,90 @@ class SpeechBot {
                 ? 'మీ బ్రౌజర్‌లో స్పీచ్ రికగ్నిషన్‌కు మద్దతు లేదు. ఉత్తమ అనుభవం కోసం దయచేసి Google Chrome ఉపయోగించండి.'
                 : 'Speech recognition is not supported in your browser. Please use Google Chrome for the best experience.';
             this.addMessage(errorMessage, 'bot');
+        }
+    }
+
+    /* ---------- Start Listening - FIXED FOR MOBILE ---------- */
+    startListening() {
+        if (!this.recognition || this.isSpeaking || this.isRecognitionStarting) {
+            console.log('Cannot start listening: busy or already starting');
+            return;
+        }
+        
+        try {
+            this.isRecognitionStarting = true;
+            this.updateRecognitionLanguage();
+            
+            if (this.recognitionRestartTimeout) {
+                clearTimeout(this.recognitionRestartTimeout);
+                this.recognitionRestartTimeout = null;
+            }
+            
+            if (this.isListening) {
+                try {
+                    this.recognition.stop();
+                } catch (e) {
+                    console.log('Error stopping recognition:', e);
+                }
+                
+                setTimeout(() => {
+                    this._actuallyStartListening();
+                }, this.isMobile ? 300 : 100);
+            } else {
+                this._actuallyStartListening();
+            }
+            
+        } catch (error) {
+            console.error('Failed to start recognition', error);
+            this.isRecognitionStarting = false;
+            setTimeout(() => {
+                if (this.conversationState === 'awaiting_question') {
+                    this.showMicrophonePrompt();
+                }
+            }, 1000);
+        }
+    }
+
+    _actuallyStartListening() {
+        try {
+            this.recognition.start();
+            this.shouldBeListening = true;
+            console.log('Attempting to start listening in language:', this.recognition.lang);
+        } catch (error) {
+            console.error('Failed in _actuallyStartListening:', error);
+            this.isRecognitionStarting = false;
+            this.shouldBeListening = false;
+            
+            if (this.isMobile && this.conversationState === 'awaiting_question') {
+                setTimeout(() => {
+                    if (!this.isRecognitionStarting && this.shouldBeListening) {
+                        this.startListening();
+                    }
+                }, 1000);
+            }
+        }
+    }
+
+    /* ---------- Stop Listening - FIXED FOR MOBILE ---------- */
+    stopListening() {
+        if (this.recognition && (this.isListening || this.isRecognitionStarting)) {
+            try {
+                this.recognition.stop();
+            } catch (e) {
+                console.log('Error stopping recognition:', e);
+            }
+            this.isListening = false;
+            this.isRecognitionStarting = false;
+            this.shouldBeListening = false;
+            this.hasShownListeningMessage = false;
+            
+            if (this.recognitionRestartTimeout) {
+                clearTimeout(this.recognitionRestartTimeout);
+                this.recognitionRestartTimeout = null;
+            }
+            
+            this.updateButtonState();
+            this.updateSendButtonToMic(false);
         }
     }
 
@@ -992,7 +1111,7 @@ class SpeechBot {
         this.processQuery(processedQuestion);
     }
 
-    /* ---------- Core speech queue & speaking - FIXED FOR MOBILE AUDIO ---------- */
+    /* ---------- Core speech queue & speaking ---------- */
     speakWithNaturalVoice(text, isAnswer = false, isFollowUp = false) {
         const chatContainer = document.getElementById('speechbot-chat-container');
         if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
@@ -1108,7 +1227,6 @@ class SpeechBot {
 
             utterance.voice = (langKey === 'te' ? this.teluguVoice : this.englishVoice) || null;
 
-            // FIX: Optimized settings for mobile to prevent "uss" sound
             if (langKey === 'te') {
                 utterance.rate = this.isMobile ? 1.0 : 1.1;
                 utterance.pitch = 1.0;
@@ -1139,7 +1257,7 @@ class SpeechBot {
 
             utterance.onerror = (e) => {
                 console.error('SpeechSynthesisUtterance error:', e);
-                resolve(); // Resolve anyway to continue queue
+                resolve();
             };
 
             try {
@@ -1160,7 +1278,7 @@ class SpeechBot {
                     console.error('speak() threw:', err);
                     resolve();
                 }
-            }, 200); // Slightly longer delay for mobile
+            }, 200);
         });
     }
 
@@ -1187,7 +1305,6 @@ class SpeechBot {
 
             await this._playAudioFromURL(audioURL);
 
-            // Clean up URL after playback
             setTimeout(() => {
                 try {
                     URL.revokeObjectURL(audioURL);
@@ -1203,13 +1320,10 @@ class SpeechBot {
 
     _preprocessTextForLanguage(text, langKey) {
         let t = text.trim();
-
-        // FIX: Remove any trailing punctuation that might cause "uss" sound
         t = t.replace(/[.,;!?]+$/, '');
         
-        // FIX: Add a small silence at the end for mobile
         if (this.isMobile && langKey === 'te') {
-            t = t + ' '; // Add space to prevent cut-off
+            t = t + ' ';
         }
 
         if (t.length > 600) {
@@ -1231,7 +1345,6 @@ class SpeechBot {
             const audio = new Audio(url);
             audio.volume = 0.95;
             
-            // FIX: Prevent "uss" sound by handling audio ending properly
             audio.addEventListener('loadedmetadata', () => {
                 console.log('Audio loaded, duration:', audio.duration);
             });
@@ -1254,8 +1367,6 @@ class SpeechBot {
             audio.addEventListener('ended', () => {
                 console.log('Audio playback ended naturally');
                 clearInterval(intervalId);
-                
-                // FIX: Add a small delay before resolving to ensure no "uss" sound
                 setTimeout(() => {
                     resolve();
                 }, 100);
@@ -1264,8 +1375,6 @@ class SpeechBot {
             audio.addEventListener('error', (e) => {
                 console.error('Audio playback error', e, audio.error);
                 clearInterval(intervalId);
-                
-                // FIX: Try to clean up and resolve anyway
                 try {
                     audio.pause();
                     audio.currentTime = 0;
@@ -1275,7 +1384,6 @@ class SpeechBot {
                 resolve();
             });
             
-            // FIX: Handle mobile audio context
             const playAudio = () => {
                 const playPromise = audio.play();
                 if (playPromise !== undefined) {
@@ -1289,7 +1397,6 @@ class SpeechBot {
                             console.log('Chat closed - skipping fallback');
                             resolve();
                         } else if ((this.currentLanguage === 'te' && this.teluguVoice) || (this.currentLanguage !== 'te' && this.englishVoice)) {
-                            // Fall back to browser TTS
                             const text = this.speechQueue[0]?.text || 'Sorry, there was an audio issue.';
                             this._speakViaBrowser(text, this.currentLanguage === 'te' ? 'te' : 'en').then(resolve).catch(resolve);
                         } else {
@@ -1299,13 +1406,12 @@ class SpeechBot {
                 }
             };
 
-            // FIX: Resume audio context if needed (especially for mobile)
             if (this.audioContext && this.audioContext.state === 'suspended') {
                 this.audioContext.resume().then(() => {
                     playAudio();
                 }).catch(err => {
                     console.warn('Failed to resume audio context:', err);
-                    playAudio(); // Try anyway
+                    playAudio();
                 });
             } else {
                 playAudio();
@@ -1313,55 +1419,7 @@ class SpeechBot {
         });
     }
 
-    /* ---------- Start Listening ---------- */
-    startListening() {
-        if (!this.recognition || this.isSpeaking) {
-            console.log('Cannot start listening: recognition not available or speaking');
-            return;
-        }
-        
-        try {
-            this.updateRecognitionLanguage();
-            
-            if (this.isListening) {
-                this.recognition.stop();
-                setTimeout(() => {
-                    this.recognition.start();
-                    this.shouldBeListening = true;
-                }, 300);
-            } else {
-                this.recognition.start();
-                this.shouldBeListening = true;
-            }
-            
-            console.log('Started listening in language:', this.recognition.lang);
-        } catch (error) {
-            console.error('Failed to start recognition', error);
-            setTimeout(() => {
-                if (this.conversationState === 'awaiting_question') {
-                    this.showMicrophonePrompt();
-                }
-            }, 1000);
-        }
-    }
-
-    /* ---------- Stop Listening ---------- */
-    stopListening() {
-        if (this.recognition && this.isListening) {
-            try {
-                this.recognition.stop();
-            } catch (e) {
-                console.log('Error stopping recognition:', e);
-            }
-            this.isListening = false;
-            this.shouldBeListening = false;
-            this.hasShownListeningMessage = false;
-            this.updateButtonState();
-            this.updateSendButtonToMic(false);
-        }
-    }
-
-    /* ---------- Post-speech actions & auto listening ---------- */
+    /* ---------- Post-speech actions & auto listening - FIXED FOR MOBILE ---------- */
     handlePostSpeechActions(isAnswer, isFollowUp) {
         const chatContainer = document.getElementById('speechbot-chat-container');
 
@@ -1372,20 +1430,22 @@ class SpeechBot {
         this.showMicrophonePrompt();
         
         if (isAnswer) {
-            console.log('Answer completed - NOT auto-listening');
+            console.log('Answer completed - NOT auto-listening on mobile');
             this.shouldBeListening = false;
             this.conversationState = 'idle';
         } else {
-            console.log('Greeting completed - auto-listening');
+            console.log('Greeting completed - considering auto-listening');
             this.shouldBeListening = true;
             this.conversationState = 'awaiting_question';
             this.hasShownListeningMessage = false;
             
-            setTimeout(() => {
-                if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
-                    this.startListening();
-                }
-            }, 1500);
+            if (!this.isMobile) {
+                setTimeout(() => {
+                    if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
+                        this.startListening();
+                    }
+                }, 1500);
+            }
         }
     }
 
@@ -1465,7 +1525,6 @@ class SpeechBot {
             } catch (e) { }
         }
         
-        // FIX: Properly clean up all audio elements to prevent "uss" sound
         this.audioElements.forEach(audio => {
             try {
                 audio.pause();
@@ -1673,15 +1732,21 @@ class SpeechBot {
 
         this.isHidingResponse = true;
 
-        this.stopSpeech();
         this.stopListening();
+        this.stopSpeech();
         this.conversationState = 'idle';
         this.shouldBeListening = false;
         this.hasShownListeningMessage = false;
         this.updateSendButtonToMic(false);
 
+        if (this.recognitionRestartTimeout) {
+            clearTimeout(this.recognitionRestartTimeout);
+            this.recognitionRestartTimeout = null;
+        }
+
         if (this.autoCloseTimeout) {
             clearTimeout(this.autoCloseTimeout);
+            this.autoCloseTimeout = null;
         }
     }
 
