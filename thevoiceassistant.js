@@ -1,4 +1,4 @@
-// speechbot.js - Complete fixed code for mobile microphone stability
+// speechbot.js - Complete fixed code with proper Telugu recognition timing
 const link = document.createElement("link");
 link.rel = "icon";
 link.href = "data:,";
@@ -24,6 +24,7 @@ class SpeechBot {
         this.hasShownListeningMessage = false;
         this.recognitionRestartTimeout = null;
         this.isRecognitionStarting = false;
+        this.recognitionStartTime = 0;
 
         // Translation API endpoints
         this.translateApiPath = '/translate';
@@ -682,22 +683,23 @@ class SpeechBot {
         }
     }
 
-    /* ---------- Speech Recognition - FIXED FOR MOBILE ---------- */
+    /* ---------- Speech Recognition - FIXED FOR TELUGU TIMING ---------- */
     setupSpeechRecognition() {
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const Recog = window.webkitSpeechRecognition || window.SpeechRecognition;
             this.recognition = new Recog();
 
-            // FIX: Stable settings for mobile
+            // FIX: Better settings for Telugu recognition
             this.recognition.continuous = true;
             this.recognition.interimResults = true;
             this.recognition.lang = 'en-US';
-            this.recognition.maxAlternatives = 1;
+            this.recognition.maxAlternatives = 3; // More alternatives for better Telugu recognition
 
             this.recognition.onstart = () => {
                 console.log('Speech recognition started - microphone active');
                 this.isListening = true;
                 this.isRecognitionStarting = false;
+                this.recognitionStartTime = Date.now();
                 this.updateButtonState();
                 this.updateSendButtonToMic(true);
                 
@@ -712,24 +714,36 @@ class SpeechBot {
 
             this.recognition.onend = () => {
                 console.log('Speech recognition ended');
+                const listeningDuration = Date.now() - this.recognitionStartTime;
                 this.isListening = false;
                 this.isRecognitionStarting = false;
                 this.updateButtonState();
                 this.updateSendButtonToMic(false);
 
-                // FIX: Conservative auto-restart for mobile
+                // FIX: Much longer timeout for Telugu on mobile
                 if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question') {
-                    console.log('Considering auto-restart for mobile');
+                    console.log('Considering auto-restart. Listening duration:', listeningDuration);
+                    
                     if (this.recognitionRestartTimeout) {
                         clearTimeout(this.recognitionRestartTimeout);
                     }
+                    
+                    // FIX: Longer delays for Telugu, especially on mobile
+                    let restartDelay;
+                    if (this.currentLanguage === 'te') {
+                        restartDelay = this.isMobile ? 2000 : 1500; // 2 seconds on mobile, 1.5 on desktop for Telugu
+                    } else {
+                        restartDelay = this.isMobile ? 1000 : 500; // 1 second on mobile, 0.5 on desktop for English
+                    }
+                    
+                    console.log(`Auto-restart delay: ${restartDelay}ms for ${this.currentLanguage} on ${this.isMobile ? 'mobile' : 'desktop'}`);
                     
                     this.recognitionRestartTimeout = setTimeout(() => {
                         if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question' && !this.isRecognitionStarting) {
                             console.log('Auto-restarting speech recognition after delay');
                             this.startListening();
                         }
-                    }, this.isMobile ? 1000 : 500);
+                    }, restartDelay);
                 }
             };
 
@@ -742,6 +756,15 @@ class SpeechBot {
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
                         finalTranscript += event.results[i][0].transcript;
+                        console.log('Final result:', event.results[i][0].transcript, 'Confidence:', event.results[i][0].confidence);
+                        
+                        // Log alternatives for debugging Telugu recognition
+                        if (event.results[i].length > 1) {
+                            console.log('Alternative results:');
+                            for (let j = 1; j < event.results[i].length; j++) {
+                                console.log(`  Alt ${j}:`, event.results[i][j].transcript, 'Confidence:', event.results[i][j].confidence);
+                            }
+                        }
                     } else {
                         interimTranscript += event.results[i][0].transcript;
                     }
@@ -750,6 +773,7 @@ class SpeechBot {
                 if (finalTranscript) {
                     console.log('Final transcript:', finalTranscript);
                     
+                    // Stop auto-listening after getting valid user input
                     this.shouldBeListening = false;
                     this.hasShownListeningMessage = false;
                     this.updateSendButtonToMic(false);
@@ -761,6 +785,9 @@ class SpeechBot {
                         this.showTypingIndicator();
                         this.processUserInput(finalTranscript);
                     }
+                } else if (interimTranscript && this.currentLanguage === 'te') {
+                    // For Telugu, show interim results to give user feedback
+                    console.log('Telugu interim transcript:', interimTranscript);
                 }
             };
 
@@ -768,10 +795,17 @@ class SpeechBot {
                 console.error('Speech recognition error:', event.error);
                 this.isListening = false;
                 this.isRecognitionStarting = false;
-                this.shouldBeListening = false;
-                this.hasShownListeningMessage = false;
                 this.updateButtonState();
                 
+                // FIX: Don't always stop listening on errors
+                if (event.error === 'no-speech') {
+                    console.log('No speech detected - this is normal during pauses');
+                    // Don't change shouldBeListening for no-speech errors
+                } else {
+                    this.shouldBeListening = false;
+                }
+                
+                this.hasShownListeningMessage = false;
                 this.updateSendButtonToMic(true, false);
 
                 let errorMessage = this.currentLanguage === 'te' 
@@ -787,9 +821,8 @@ class SpeechBot {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మాట్లాడడం గుర్తించబడలేదు. దయచేసి మీ ప్రశ్నను మాట్లాడండి.'
                         : 'No speech detected. Please speak your question.';
-                    if (!this.isMobile) {
-                        this.shouldBeListening = true;
-                    }
+                    // Keep listening for no-speech errors
+                    this.shouldBeListening = true;
                 } else if (event.error === 'audio-capture') {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మైక్రోఫోన్ కనబడలేదు. దయచేసి మీ ఆడియో సెట్టింగ్లను తనిఖీ చేయండి.'
@@ -805,7 +838,7 @@ class SpeechBot {
                     return;
                 }
 
-                if (event.error !== 'aborted') {
+                if (event.error !== 'aborted' && event.error !== 'no-speech') {
                     this.addMessage(errorMessage, 'bot');
                 }
 
@@ -817,7 +850,11 @@ class SpeechBot {
             };
 
             this.recognition.onnomatch = () => {
-                console.log('No speech match found');
+                console.log('No speech match found - this is common for Telugu');
+                // For Telugu, don't treat this as an error - just keep listening
+                if (this.currentLanguage === 'te') {
+                    this.shouldBeListening = true;
+                }
             };
         } else {
             const errorMessage = this.currentLanguage === 'te'
@@ -827,7 +864,7 @@ class SpeechBot {
         }
     }
 
-    /* ---------- Start Listening - FIXED FOR MOBILE ---------- */
+    /* ---------- Start Listening - IMPROVED FOR TELUGU ---------- */
     startListening() {
         if (!this.recognition || this.isSpeaking || this.isRecognitionStarting) {
             console.log('Cannot start listening: busy or already starting');
@@ -850,9 +887,11 @@ class SpeechBot {
                     console.log('Error stopping recognition:', e);
                 }
                 
+                // FIX: Longer delay for Telugu
+                const restartDelay = this.currentLanguage === 'te' ? 500 : 300;
                 setTimeout(() => {
                     this._actuallyStartListening();
-                }, this.isMobile ? 300 : 100);
+                }, restartDelay);
             } else {
                 this._actuallyStartListening();
             }
@@ -876,19 +915,21 @@ class SpeechBot {
         } catch (error) {
             console.error('Failed in _actuallyStartListening:', error);
             this.isRecognitionStarting = false;
-            this.shouldBeListening = false;
             
-            if (this.isMobile && this.conversationState === 'awaiting_question') {
+            // FIX: More aggressive retry for Telugu on mobile
+            if (this.conversationState === 'awaiting_question') {
+                const retryDelay = (this.currentLanguage === 'te' && this.isMobile) ? 2000 : 1000;
                 setTimeout(() => {
                     if (!this.isRecognitionStarting && this.shouldBeListening) {
+                        console.log('Retrying to start listening...');
                         this.startListening();
                     }
-                }, 1000);
+                }, retryDelay);
             }
         }
     }
 
-    /* ---------- Stop Listening - FIXED FOR MOBILE ---------- */
+    /* ---------- Stop Listening ---------- */
     stopListening() {
         if (this.recognition && (this.isListening || this.isRecognitionStarting)) {
             try {
@@ -911,7 +952,7 @@ class SpeechBot {
         }
     }
 
-    /* ---------- Greeting Detection & Handling ---------- */
+    /* ---------- Greeting Detection & Handling - FIXED AUTO-LISTENING ---------- */
     isGreeting(text) {
         const patterns = this.greetingPatterns[this.currentLanguage] || this.greetingPatterns.en;
         
@@ -1231,7 +1272,7 @@ class SpeechBot {
                 utterance.rate = this.isMobile ? 1.0 : 1.1;
                 utterance.pitch = 1.0;
             } else {
-                utterance.rate = this.isMobile ? 1.0 : 1.1;
+                utterance.rate = this.isMobile ? 0.99 : 0.95;
                 utterance.pitch = 1.03;
             }
             utterance.volume = 0.95;
@@ -1419,7 +1460,7 @@ class SpeechBot {
         });
     }
 
-    /* ---------- Post-speech actions & auto listening - FIXED FOR MOBILE ---------- */
+    /* ---------- Post-speech actions & auto listening - FIXED AUTO-LISTENING ---------- */
     handlePostSpeechActions(isAnswer, isFollowUp) {
         const chatContainer = document.getElementById('speechbot-chat-container');
 
@@ -1429,23 +1470,28 @@ class SpeechBot {
 
         this.showMicrophonePrompt();
         
+        // FIX: RESTORED AUTO-LISTENING AFTER GREETINGS
         if (isAnswer) {
-            console.log('Answer completed - NOT auto-listening on mobile');
+            // This is an answer to a question - don't auto-listen
+            console.log('Answer completed - NOT auto-listening');
             this.shouldBeListening = false;
             this.conversationState = 'idle';
         } else {
-            console.log('Greeting completed - considering auto-listening');
+            // This is a greeting or welcome message - AUTO-LISTEN SHOULD WORK
+            console.log('Greeting completed - AUTO-LISTENING ENABLED');
             this.shouldBeListening = true;
             this.conversationState = 'awaiting_question';
             this.hasShownListeningMessage = false;
             
-            if (!this.isMobile) {
-                setTimeout(() => {
-                    if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
-                        this.startListening();
-                    }
-                }, 1500);
-            }
+            // FIX: Auto-listen should work on both mobile and desktop after greetings
+            const autoListenDelay = this.isMobile ? 2000 : 1500; // Slightly longer on mobile
+            
+            setTimeout(() => {
+                if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
+                    console.log('Auto-starting listening after greeting');
+                    this.startListening();
+                }
+            }, autoListenDelay);
         }
     }
 
