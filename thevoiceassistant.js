@@ -1,4 +1,4 @@
-// speechbot.js - Complete fixed code with microphone button fix for Telugu errors
+// speechbot.js - Complete fixed code with mobile audio fix for "uss" sound
 const link = document.createElement("link");
 link.rel = "icon";
 link.href = "data:,";
@@ -32,6 +32,13 @@ class SpeechBot {
         this.prefersBackendTTSFor = { te: false, en: false };
         this.backendTTSPath = '/tts';
         
+        // Mobile detection
+        this.isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
+        // Audio context for mobile audio issues
+        this.audioContext = null;
+        this.audioElements = [];
+        
         // Enhanced Greeting patterns with better Telugu matching
         this.greetingPatterns = {
             en: [
@@ -60,6 +67,26 @@ class SpeechBot {
         this.setupSpeechRecognition();
         this.setupTextToSpeech();
         this.addStyles();
+        this.setupAudioContext();
+    }
+
+    /* ---------- Audio Context Setup for Mobile ---------- */
+    setupAudioContext() {
+        try {
+            // Create audio context for better mobile audio handling
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                this.audioContext = new AudioContext();
+                // Resume audio context on user interaction (required for mobile)
+                document.addEventListener('click', () => {
+                    if (this.audioContext && this.audioContext.state === 'suspended') {
+                        this.audioContext.resume();
+                    }
+                }, { once: true });
+            }
+        } catch (error) {
+            console.warn('AudioContext not supported:', error);
+        }
     }
 
     /* ---------- Styles & UI ---------- */
@@ -523,6 +550,27 @@ class SpeechBot {
                 border: 1px solid #d1e7ff;
                 margin: 10px 0;
             }
+
+            /* Mobile-specific styles */
+            @media (max-width: 480px) {
+                .voice-assistant {
+                    bottom: 10px;
+                    right: 10px;
+                }
+                
+                .chat-container {
+                    width: 95vw;
+                    height: 70vh;
+                    right: 2.5vw;
+                    bottom: 70px;
+                }
+                
+                .assistant-btn {
+                    width: 50px;
+                    height: 50px;
+                    font-size: 20px;
+                }
+            }
         `;
         document.head.appendChild(style);
     }
@@ -616,11 +664,21 @@ class SpeechBot {
                 this.startConversation();
             }
         });
+
+        // Add touch event for mobile
+        if (this.isMobile) {
+            document.getElementById('assistant-btn').addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                this.toggleChat();
+            }, { passive: false });
+        }
     }
 
     updateRecognitionLanguage() {
         if (this.recognition) {
-            this.recognition.lang = this.currentLanguage === 'te' ? 'te-IN' : 'en-US';
+            const langCode = this.currentLanguage === 'te' ? 'te-IN' : 'en-US';
+            this.recognition.lang = langCode;
+            console.log('Speech recognition language set to:', langCode);
         }
     }
 
@@ -630,12 +688,13 @@ class SpeechBot {
             const Recog = window.webkitSpeechRecognition || window.SpeechRecognition;
             this.recognition = new Recog();
 
-            this.recognition.continuous = false;
+            this.recognition.continuous = true;
             this.recognition.interimResults = false;
             this.recognition.lang = 'en-US';
             this.recognition.maxAlternatives = 1;
 
             this.recognition.onstart = () => {
+                console.log('Speech recognition started');
                 this.isListening = true;
                 this.updateButtonState();
                 this.updateSendButtonToMic(true);
@@ -650,23 +709,25 @@ class SpeechBot {
             };
 
             this.recognition.onend = () => {
+                console.log('Speech recognition ended');
                 this.isListening = false;
                 this.updateButtonState();
                 this.updateSendButtonToMic(false);
 
                 if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question') {
+                    console.log('Auto-restarting speech recognition');
                     setTimeout(() => {
                         if (this.shouldBeListening && !this.isSpeaking && this.conversationState === 'awaiting_question') {
                             this.startListening();
                         }
-                    }, 100);
+                    }, 500);
                 }
             };
 
             this.recognition.onresult = (event) => {
-                const transcript = event.results[0][0].transcript;
+                console.log('Speech recognition result received');
+                const transcript = event.results[event.results.length - 1][0].transcript;
                 
-                // Stop auto-listening after getting any user input
                 this.shouldBeListening = false;
                 this.hasShownListeningMessage = false;
                 this.updateSendButtonToMic(false);
@@ -687,7 +748,6 @@ class SpeechBot {
                 this.hasShownListeningMessage = false;
                 this.updateButtonState();
                 
-                // FIX: Always update send button to microphone after errors
                 this.updateSendButtonToMic(true, false);
 
                 let errorMessage = this.currentLanguage === 'te' 
@@ -702,13 +762,6 @@ class SpeechBot {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మాట్లాడడం గుర్తించబడలేదు. దయచేసి మీ ప్రశ్నను మాట్లాడండి.'
                         : 'No speech detected. Please speak your question.';
-                    if (this.shouldBeListening && this.conversationState === 'awaiting_question') {
-                        setTimeout(() => {
-                            if (!this.isSpeaking && this.shouldBeListening && this.conversationState === 'awaiting_question') {
-                                this.startListening();
-                            }
-                        }, 1000);
-                    }
                 } else if (event.error === 'audio-capture') {
                     errorMessage = this.currentLanguage === 'te'
                         ? 'మైక్రోఫోన్ కనబడలేదు. దయచేసి మీ ఆడియో సెట్టింగ్లను తనిఖీ చేయండి.'
@@ -720,10 +773,16 @@ class SpeechBot {
                 }
 
                 this.addMessage(errorMessage, 'bot');
-                // Show microphone prompt after error - FIXED: Ensure microphone button is enabled
+                
                 setTimeout(() => {
-                    this.showMicrophonePrompt();
-                }, 500);
+                    if (this.conversationState === 'awaiting_question') {
+                        this.showMicrophonePrompt();
+                    }
+                }, 1000);
+            };
+
+            this.recognition.onnomatch = () => {
+                console.log('No speech match found');
             };
         } else {
             const errorMessage = this.currentLanguage === 'te'
@@ -933,7 +992,7 @@ class SpeechBot {
         this.processQuery(processedQuestion);
     }
 
-    /* ---------- Core speech queue & speaking ---------- */
+    /* ---------- Core speech queue & speaking - FIXED FOR MOBILE AUDIO ---------- */
     speakWithNaturalVoice(text, isAnswer = false, isFollowUp = false) {
         const chatContainer = document.getElementById('speechbot-chat-container');
         if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
@@ -1049,11 +1108,12 @@ class SpeechBot {
 
             utterance.voice = (langKey === 'te' ? this.teluguVoice : this.englishVoice) || null;
 
+            // FIX: Optimized settings for mobile to prevent "uss" sound
             if (langKey === 'te') {
-                utterance.rate = 1.1;
+                utterance.rate = this.isMobile ? 1.0 : 1.1;
                 utterance.pitch = 1.0;
             } else {
-                utterance.rate = 0.95;
+                utterance.rate = this.isMobile ? 1.0 : 1.1;
                 utterance.pitch = 1.03;
             }
             utterance.volume = 0.95;
@@ -1073,12 +1133,13 @@ class SpeechBot {
             };
 
             utterance.onend = () => {
+                console.log('Browser TTS ended successfully');
                 resolve();
             };
 
             utterance.onerror = (e) => {
                 console.error('SpeechSynthesisUtterance error:', e);
-                resolve();
+                resolve(); // Resolve anyway to continue queue
             };
 
             try {
@@ -1099,7 +1160,7 @@ class SpeechBot {
                     console.error('speak() threw:', err);
                     resolve();
                 }
-            }, 180);
+            }, 200); // Slightly longer delay for mobile
         });
     }
 
@@ -1111,7 +1172,10 @@ class SpeechBot {
             const response = await fetch(ttsUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: this._preprocessTextForLanguage(text, langKey), lang: langParam })
+                body: JSON.stringify({ 
+                    text: this._preprocessTextForLanguage(text, langKey), 
+                    lang: langParam 
+                })
             });
 
             if (!response.ok) {
@@ -1123,7 +1187,14 @@ class SpeechBot {
 
             await this._playAudioFromURL(audioURL);
 
-            setTimeout(() => URL.revokeObjectURL(audioURL), 5000);
+            // Clean up URL after playback
+            setTimeout(() => {
+                try {
+                    URL.revokeObjectURL(audioURL);
+                } catch (e) {
+                    console.warn('Error revoking audio URL:', e);
+                }
+            }, 3000);
         } catch (err) {
             console.error('Backend TTS error:', err);
             throw err;
@@ -1132,6 +1203,14 @@ class SpeechBot {
 
     _preprocessTextForLanguage(text, langKey) {
         let t = text.trim();
+
+        // FIX: Remove any trailing punctuation that might cause "uss" sound
+        t = t.replace(/[.,;!?]+$/, '');
+        
+        // FIX: Add a small silence at the end for mobile
+        if (this.isMobile && langKey === 'te') {
+            t = t + ' '; // Add space to prevent cut-off
+        }
 
         if (t.length > 600) {
             t = t.substring(0, 600) + '...';
@@ -1152,6 +1231,15 @@ class SpeechBot {
             const audio = new Audio(url);
             audio.volume = 0.95;
             
+            // FIX: Prevent "uss" sound by handling audio ending properly
+            audio.addEventListener('loadedmetadata', () => {
+                console.log('Audio loaded, duration:', audio.duration);
+            });
+            
+            audio.addEventListener('canplaythrough', () => {
+                console.log('Audio can play through');
+            });
+            
             const checkChatClosed = () => {
                 if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
                     console.log('Chat closed during audio playback - stopping');
@@ -1163,36 +1251,114 @@ class SpeechBot {
             
             const intervalId = setInterval(checkChatClosed, 500);
             
-            audio.onended = () => {
+            audio.addEventListener('ended', () => {
+                console.log('Audio playback ended naturally');
                 clearInterval(intervalId);
-                resolve();
-            };
+                
+                // FIX: Add a small delay before resolving to ensure no "uss" sound
+                setTimeout(() => {
+                    resolve();
+                }, 100);
+            });
             
-            audio.onerror = (e) => {
+            audio.addEventListener('error', (e) => {
+                console.error('Audio playback error', e, audio.error);
                 clearInterval(intervalId);
-                console.error('Audio playback error', e);
+                
+                // FIX: Try to clean up and resolve anyway
+                try {
+                    audio.pause();
+                    audio.currentTime = 0;
+                } catch (err) {
+                    console.warn('Error cleaning up audio:', err);
+                }
                 resolve();
-            };
+            });
             
-            const playPromise = audio.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                }).catch((err) => {
-                    clearInterval(intervalId);
-                    console.warn('Autoplay blocked, attempting fallback to speechSynthesis', err);
-                    if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
-                        console.log('Chat closed - skipping fallback');
-                        resolve();
-                    } else if ((this.currentLanguage === 'te' && this.teluguVoice) || (this.currentLanguage !== 'te' && this.englishVoice)) {
-                        this._speakViaBrowser(url, this.currentLanguage === 'te' ? 'te' : 'en').then(resolve).catch(resolve);
-                    } else {
-                        resolve();
-                    }
+            // FIX: Handle mobile audio context
+            const playAudio = () => {
+                const playPromise = audio.play();
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log('Audio playback started successfully');
+                    }).catch((err) => {
+                        console.warn('Autoplay blocked, attempting fallback:', err);
+                        clearInterval(intervalId);
+                        
+                        if (!chatContainer.classList.contains('active') || this.isHidingResponse) {
+                            console.log('Chat closed - skipping fallback');
+                            resolve();
+                        } else if ((this.currentLanguage === 'te' && this.teluguVoice) || (this.currentLanguage !== 'te' && this.englishVoice)) {
+                            // Fall back to browser TTS
+                            const text = this.speechQueue[0]?.text || 'Sorry, there was an audio issue.';
+                            this._speakViaBrowser(text, this.currentLanguage === 'te' ? 'te' : 'en').then(resolve).catch(resolve);
+                        } else {
+                            resolve();
+                        }
+                    });
+                }
+            };
+
+            // FIX: Resume audio context if needed (especially for mobile)
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                this.audioContext.resume().then(() => {
+                    playAudio();
+                }).catch(err => {
+                    console.warn('Failed to resume audio context:', err);
+                    playAudio(); // Try anyway
                 });
             } else {
-                resolve();
+                playAudio();
             }
         });
+    }
+
+    /* ---------- Start Listening ---------- */
+    startListening() {
+        if (!this.recognition || this.isSpeaking) {
+            console.log('Cannot start listening: recognition not available or speaking');
+            return;
+        }
+        
+        try {
+            this.updateRecognitionLanguage();
+            
+            if (this.isListening) {
+                this.recognition.stop();
+                setTimeout(() => {
+                    this.recognition.start();
+                    this.shouldBeListening = true;
+                }, 300);
+            } else {
+                this.recognition.start();
+                this.shouldBeListening = true;
+            }
+            
+            console.log('Started listening in language:', this.recognition.lang);
+        } catch (error) {
+            console.error('Failed to start recognition', error);
+            setTimeout(() => {
+                if (this.conversationState === 'awaiting_question') {
+                    this.showMicrophonePrompt();
+                }
+            }, 1000);
+        }
+    }
+
+    /* ---------- Stop Listening ---------- */
+    stopListening() {
+        if (this.recognition && this.isListening) {
+            try {
+                this.recognition.stop();
+            } catch (e) {
+                console.log('Error stopping recognition:', e);
+            }
+            this.isListening = false;
+            this.shouldBeListening = false;
+            this.hasShownListeningMessage = false;
+            this.updateButtonState();
+            this.updateSendButtonToMic(false);
+        }
     }
 
     /* ---------- Post-speech actions & auto listening ---------- */
@@ -1205,14 +1371,11 @@ class SpeechBot {
 
         this.showMicrophonePrompt();
         
-        // CRITICAL FIX: Only auto-listen after greetings, never after answers
         if (isAnswer) {
-            // This is an answer to a question - NEVER auto-listen
             console.log('Answer completed - NOT auto-listening');
             this.shouldBeListening = false;
             this.conversationState = 'idle';
         } else {
-            // This is a greeting or welcome message - auto-listen
             console.log('Greeting completed - auto-listening');
             this.shouldBeListening = true;
             this.conversationState = 'awaiting_question';
@@ -1246,7 +1409,6 @@ class SpeechBot {
         chatMessages.appendChild(promptDiv);
         chatMessages.scrollTop = chatMessages.scrollHeight;
         
-        // FIXED: Ensure microphone button is always enabled when showing prompt
         this.updateSendButtonToMic(true, false);
     }
 
@@ -1303,44 +1465,20 @@ class SpeechBot {
             } catch (e) { }
         }
         
-        const audioElements = document.querySelectorAll('audio');
-        audioElements.forEach(audio => {
+        // FIX: Properly clean up all audio elements to prevent "uss" sound
+        this.audioElements.forEach(audio => {
             try {
                 audio.pause();
                 audio.currentTime = 0;
+                audio.src = '';
+                audio.load();
             } catch (e) { }
         });
+        this.audioElements = [];
         
         this.isSpeaking = false;
         this.currentUtterance = null;
         this.speechQueue = [];
-    }
-
-    stopListening() {
-        if (this.recognition && this.isListening) {
-            try {
-                this.recognition.stop();
-            } catch (e) { }
-            this.isListening = false;
-            this.shouldBeListening = false;
-            this.hasShownListeningMessage = false;
-            this.updateButtonState();
-            this.updateSendButtonToMic(false);
-        }
-    }
-
-    startListening() {
-        if (!this.recognition || this.isSpeaking) return;
-        try {
-            this.updateRecognitionLanguage();
-            this.recognition.start();
-            this.shouldBeListening = true;
-        } catch (error) {
-            console.error('Failed to start recognition', error);
-            setTimeout(() => {
-                this.showMicrophonePrompt();
-            }, 1000);
-        }
     }
 
     updateButtonState() {
@@ -1585,5 +1723,4 @@ document.addEventListener('DOMContentLoaded', function() {
 
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { SpeechBot, initt_v_a };
-
 }
