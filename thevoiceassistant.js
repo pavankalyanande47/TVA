@@ -758,7 +758,7 @@ class SpeechBotIntegrated {
         this.shouldIgnoreSpeech = false;
         
         // SpeechBot backend configuration
-        this.apiBaseUrl = 'http://34.44.208.63:8000';
+        this.apiBaseUrl = 'https://tva.batalks.in';
         this.translateApiPath = '/translate';
         this.backendTTSPath = '/tts';
         
@@ -2470,4 +2470,5 @@ document.addEventListener('DOMContentLoaded', function() {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { SpeechBotIntegrated, initt_v_a };
 }
+
 
